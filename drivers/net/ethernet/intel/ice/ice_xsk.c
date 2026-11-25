@@ -509,6 +509,7 @@ static u32 ice_clean_xsk_buf(struct ice_tx_ring *ring, struct ice_tx_buf *buf)
 static u32 ice_clean_xdp_irq_zc(struct ice_tx_ring *xdp_ring,
 				struct xsk_buff_pool *xsk_pool)
 {
+	const __le64 done = cpu_to_le64(ICE_TX_DESC_DTYPE_DESC_DONE);
 	u16 ntc = xdp_ring->next_to_clean;
 	struct ice_tx_desc *tx_desc;
 	u16 cnt = xdp_ring->count;
@@ -517,14 +518,21 @@ static u32 ice_clean_xdp_irq_zc(struct ice_tx_ring *xdp_ring,
 	u16 last_rs;
 	int i;
 
-	last_rs = xdp_ring->next_to_use ? xdp_ring->next_to_use - 1 : cnt - 1;
-	tx_desc = ICE_TX_DESC(xdp_ring, last_rs);
-	if (tx_desc->cmd_type_offset_bsz &
-	    cpu_to_le64(ICE_TX_DESC_DTYPE_DESC_DONE)) {
+	while (ntc != xdp_ring->next_to_use) {
+		/* XDP_TX frames of an Rx poll in progress have no RS descriptor
+		 * yet, so rs_idx of their first buffer is stale and may point
+		 * to a context descriptor, which shares a bit with DESC_DONE
+		 */
+		last_rs = xdp_ring->tx_buf[ntc].rs_idx;
+		tx_desc = ICE_TX_DESC(xdp_ring, last_rs);
+		if ((tx_desc->cmd_type_offset_bsz & done) != done)
+			break;
+		tx_desc->cmd_type_offset_bsz = 0;
 		if (last_rs >= ntc)
-			completed_frames = last_rs - ntc + 1;
+			completed_frames += last_rs - ntc + 1;
 		else
-			completed_frames = last_rs + cnt - ntc + 1;
+			completed_frames += last_rs + cnt - ntc + 1;
+		ntc = last_rs + 1 < cnt ? last_rs + 1 : 0;
 	}
 
 	if (!completed_frames)
@@ -544,7 +552,6 @@ static u32 ice_clean_xdp_irq_zc(struct ice_tx_ring *xdp_ring,
 			ntc = 0;
 	}
 skip:
-	tx_desc->cmd_type_offset_bsz = 0;
 	xdp_ring->next_to_clean += completed_frames;
 	if (xdp_ring->next_to_clean >= cnt)
 		xdp_ring->next_to_clean -= cnt;
@@ -722,12 +729,14 @@ int ice_clean_rx_irq_zc(struct ice_rx_ring *rx_ring,
 	u32 cnt = rx_ring->count;
 	bool failure = false;
 	int entries_to_alloc;
+	u32 cached_ntu;
 
 	/* ZC patch is enabled only when XDP program is set,
 	 * so here it can not be NULL
 	 */
 	xdp_prog = READ_ONCE(rx_ring->xdp_prog);
 	xdp_ring = rx_ring->xdp_ring;
+	cached_ntu = xdp_ring->next_to_use;
 
 	while (likely(total_rx_packets < (unsigned int)budget)) {
 		union ice_32b_rx_flex_desc *rx_desc;
@@ -830,7 +839,7 @@ construct_skb:
 		failure |= !ice_alloc_rx_bufs_zc(rx_ring, xsk_pool,
 						 entries_to_alloc);
 
-	ice_finalize_xdp_rx(xdp_ring, xdp_xmit, 0);
+	ice_finalize_xdp_rx(xdp_ring, xdp_xmit, cached_ntu);
 	ice_update_rx_ring_stats(rx_ring, total_rx_packets, total_rx_bytes);
 
 	if (xsk_uses_need_wakeup(xsk_pool)) {
@@ -1183,6 +1192,7 @@ bool ice_xmit_zc(struct ice_tx_ring *xdp_ring, struct xsk_buff_pool *xsk_pool)
 {
 	struct xdp_desc *descs = xsk_pool->tx_descs;
 	u32 nb_pkts, nb_processed = 0, packets;
+	u32 ntu = xdp_ring->next_to_use;
 	unsigned int total_bytes = 0;
 	u32 budget, cost = 1;
 
@@ -1220,7 +1230,7 @@ bool ice_xmit_zc(struct ice_tx_ring *xdp_ring, struct xsk_buff_pool *xsk_pool)
 
 	/* Metadata packets may all have been dropped. */
 	if (packets) {
-		ice_set_rs_bit(xdp_ring);
+		xdp_ring->tx_buf[ntu].rs_idx = ice_set_rs_bit(xdp_ring);
 		ice_xdp_ring_update_tail(xdp_ring);
 		ice_update_tx_ring_stats(xdp_ring, packets, total_bytes);
 	}

@@ -768,35 +768,6 @@ void xp_free(struct xdp_buff_xsk *xskb)
 }
 EXPORT_SYMBOL(xp_free);
 
-static u64 __xp_raw_get_addr(const struct xsk_buff_pool *pool, u64 addr)
-{
-	return pool->unaligned ? xp_unaligned_add_offset_to_addr(addr) : addr;
-}
-
-static void *__xp_raw_get_data(const struct xsk_buff_pool *pool, u64 addr)
-{
-	return pool->addrs + addr;
-}
-
-void *xp_raw_get_data(struct xsk_buff_pool *pool, u64 addr)
-{
-	return __xp_raw_get_data(pool, __xp_raw_get_addr(pool, addr));
-}
-EXPORT_SYMBOL(xp_raw_get_data);
-
-static dma_addr_t __xp_raw_get_dma(const struct xsk_buff_pool *pool, u64 addr)
-{
-	return (pool->dma_pages[addr >> PAGE_SHIFT] &
-		~XSK_NEXT_PG_CONTIG_MASK) +
-		(addr & ~PAGE_MASK);
-}
-
-dma_addr_t xp_raw_get_dma(struct xsk_buff_pool *pool, u64 addr)
-{
-	return __xp_raw_get_dma(pool, __xp_raw_get_addr(pool, addr));
-}
-EXPORT_SYMBOL(xp_raw_get_dma);
-
 /**
  * xp_raw_get_ctx - get &xdp_desc context
  * @pool: XSk buff pool desc address belongs to

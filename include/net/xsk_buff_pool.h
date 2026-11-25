@@ -153,8 +153,6 @@ void xp_dma_unmap(struct xsk_buff_pool *pool, unsigned long attrs);
 struct xdp_buff *xp_alloc(struct xsk_buff_pool *pool);
 u32 xp_alloc_batch(struct xsk_buff_pool *pool, struct xdp_buff **xdp, u32 max);
 bool xp_can_alloc(struct xsk_buff_pool *pool, u32 count);
-void *xp_raw_get_data(struct xsk_buff_pool *pool, u64 addr);
-dma_addr_t xp_raw_get_dma(struct xsk_buff_pool *pool, u64 addr);
 
 struct xdp_desc_ctx {
 	dma_addr_t dma;
@@ -223,6 +221,35 @@ static inline u64 xp_unaligned_add_offset_to_addr(u64 addr)
 {
 	return xp_unaligned_extract_addr(addr) +
 		xp_unaligned_extract_offset(addr);
+}
+
+static inline u64 __xp_raw_get_addr(const struct xsk_buff_pool *pool, u64 addr)
+{
+	return pool->unaligned ? xp_unaligned_add_offset_to_addr(addr) : addr;
+}
+
+static inline void *__xp_raw_get_data(const struct xsk_buff_pool *pool,
+				      u64 addr)
+{
+	return pool->addrs + addr;
+}
+
+static inline void *xp_raw_get_data(struct xsk_buff_pool *pool, u64 addr)
+{
+	return __xp_raw_get_data(pool, __xp_raw_get_addr(pool, addr));
+}
+
+static inline dma_addr_t __xp_raw_get_dma(const struct xsk_buff_pool *pool,
+					  u64 addr)
+{
+	return (pool->dma_pages[addr >> PAGE_SHIFT] &
+		~XSK_NEXT_PG_CONTIG_MASK) +
+		(addr & ~PAGE_MASK);
+}
+
+static inline dma_addr_t xp_raw_get_dma(struct xsk_buff_pool *pool, u64 addr)
+{
+	return __xp_raw_get_dma(pool, __xp_raw_get_addr(pool, addr));
 }
 
 static inline u32 xp_aligned_extract_idx(struct xsk_buff_pool *pool, u64 addr)
